@@ -1,17 +1,6 @@
 import streamlit as st
 import numpy as np
 
-# =========================
-# CONFIG PARAMETERS
-# =========================
-
-cooling_radius = 15
-cooldown_steps = 5
-heat_increase = 1.0
-decay = 0.85
-temp_threshold = 2.5import streamlit as st
-import numpy as np
-
 """
 Thermal Path Optimizer for Streamlit
 
