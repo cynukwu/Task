@@ -1,228 +1,210 @@
+# =========================================================
+# THERMAL-AWARE SPOT-BASED SCAN STRATEGY (SUBMISSION PACKAGE)
+# =========================================================
+# Project: Electron Beam Powder Bed Fusion Scan Optimization
+# System: Streamlit Demo + OBP-style command generator
+# Inspired by: Spot-based melting strategies in E-PBF (JOM literature)
+# Target system context: Freemelt ONE (conceptual compatibility)
+# =========================================================
+
+"""
+SUBMISSION OVERVIEW
+-------------------
+This project implements a thermal-aware scan strategy inspired by
+Electron Beam Powder Bed Fusion (E-PBF) systems such as Freemelt ONE.
+
+It demonstrates:
+- Spot-based melting logic
+- Thermal accumulation modeling
+- Hybrid scan cost optimization
+- OBP-style machine command generation
+- Streamlit-based interactive visualization
+
+IMPORTANT:
+This code does NOT control hardware. It is a simulation of scan logic.
+"""
+
 import streamlit as st
 import numpy as np
 
-"""
-Thermal Path Optimizer for Streamlit
+# =========================================================
+# 1. SYSTEM PARAMETERS (SCAN + THERMAL MODEL)
+# =========================================================
 
-What this app does:
-- Generates a set of 2D scan points.
-- Chooses the next point using a hybrid cost function.
-- Tracks a simple thermal field so nearby points become less desirable.
-- Displays the resulting path and the final temperature values.
+cooling_radius = 15
+cooldown_steps = 5
+heat_increase = 1.0
+decay = 0.85
+temp_threshold = 2.5
 
-Connection to Freemelt ONE:
-This code is a simplified, educational model inspired by thermal-aware planning in
-Electron Beam Powder Bed Fusion (E-PBF). Freemelt ONE is an E-PBF system with a
-6 kW electron gun, high powder bed temperatures, and a protected chamber designed
-for hot processing. Freemelt also describes ProHeat, a preheating method used across
-its machine models, and line melting / hatching as a common E-PBF strategy.
-This script does not control the machine; it only demonstrates the logic behind
-spacing, cooling, and thermal-aware path selection.
-"""
+alpha = 1.0   # geometric weight
+beta = 2.0    # thermal weight
 
-# =========================
-# CONFIG PARAMETERS
-# =========================
-# These values define the thermal behavior of the model.
-# They are tunable knobs for the assignment and for experiments.
+# =========================================================
+# 2. THERMAL MODEL (PHYSICAL ANALOGY)
+# =========================================================
 
-cooling_radius = 15     # Nearby points within this distance receive heat influence.
-cooldown_steps = 5      # A point must wait this many steps before being valid again.
-heat_increase = 1.0     # How much heat is added to nearby points.
-decay = 0.85            # Global cooling after every update.
-temp_threshold = 2.5    # Above this temperature, a point is considered too hot.
-
-alpha = 1.0             # Weight for geometric distance in the cost function.
-beta = 2.0              # Weight for thermal penalty in the cost function.
-
-# =========================
-# THERMAL MODEL
-# =========================
-# This block simulates a simple heat field.
-# In a real E-PBF setting, the heat field would be more complex, but the idea is
-# the same: recent exposure influences nearby areas and changes future decisions.
+def init_temperature(n):
+    """Initialize thermal state of powder bed."""
+    return np.zeros(n), np.full(n, -999)
 
 
-def init_temperature(num_points):
-    """Create the initial thermal state for all points."""
-    temperature = np.zeros(num_points)
-    last_visited_step = np.full(num_points, -999)
-    return temperature, last_visited_step
-
-
-def update_temperature(visited_idx, step, points, temperature):
-    """
-    Update the temperature field after visiting one point.
-
-    Function:
-    - Adds heat to nearby points.
-    - Applies global decay.
-
-    Use:
-    - Prevents repeated scanning of the same hot region.
-
-    Improvement applied:
-    - Replaces a pure distance-only greedy method with a heat-aware model.
-    """
+def update_temperature(idx, step, points, temp):
+    """Simulates heat accumulation from electron beam exposure."""
     for i in range(len(points)):
-        dist = np.linalg.norm(points[i] - points[visited_idx])
+        dist = np.linalg.norm(points[i] - points[idx])
 
-        # Spatial heating: points close to the visited point get extra heat.
+        # localized heating (melt pool influence zone)
         if dist < cooling_radius:
-            temperature[i] += heat_increase * (1 - dist / cooling_radius)
+            temp[i] += heat_increase * (1 - dist / cooling_radius)
 
-        # Global decay: the whole field cools down over time.
-        temperature[i] *= decay
+        # global cooling (thermal relaxation)
+        temp[i] *= decay
 
 
-def is_valid(candidate, step, temperature, last_visited_step):
-    """
-    Decide whether a candidate point is allowed.
-
-    Function:
-    - Rejects points that are too hot.
-    - Rejects points that were visited too recently.
-
-    Use:
-    - Enforces spacing in both temperature and time.
-
-    Improvement applied:
-    - Adds a cooling constraint so the path does not bounce around one hot zone.
-    """
-    if temperature[candidate] > temp_threshold:
+def is_valid(i, step, temp, last):
+    """Thermal + temporal constraints (melt stability condition)."""
+    if temp[i] > temp_threshold:
         return False
 
-    if step - last_visited_step[candidate] < cooldown_steps:
+    if step - last[i] < cooldown_steps:
         return False
 
     return True
 
-# =========================
-# COST FUNCTION
-# =========================
-# This is the main decision rule.
-# The next point is chosen by balancing travel distance and thermal penalty.
+# =========================================================
+# 3. COST FUNCTION (SCAN STRATEGY DECISION RULE)
+# =========================================================
 
+def cost(current, candidate, points, temp):
+    dist = np.linalg.norm(points[current] - points[candidate])
+    thermal = temp[candidate]
+    return alpha * dist + beta * thermal
 
-def cost(current, candidate, points, temperature):
-    """
-    Hybrid cost = distance cost + thermal cost.
+# =========================================================
+# 4. SCAN STRATEGY (SPOT-BASED OPTIMIZATION)
+# =========================================================
 
-    Function:
-    - Measures how far the candidate is.
-    - Penalizes candidates in hotter areas.
+def run_optimizer(points, temp, last):
+    """Thermal-aware scan path generation."""
+    n = len(points)
 
-    Use:
-    - Makes the optimizer prefer cooler and closer points.
+    path = [0]
+    last[0] = 0
 
-    Improvement applied:
-    - Better than nearest-neighbor alone because it avoids thermal clustering.
-    """
-    dist_cost = np.linalg.norm(points[current] - points[candidate])
-    thermal_cost = temperature[candidate]
-    return alpha * dist_cost + beta * thermal_cost
+    for step in range(1, n):
+        current = path[-1]
 
-# =========================
-# OPTIMIZER
-# =========================
-# This is the path builder.
-# It starts at point 0 and keeps selecting the best next valid point.
-
-
-def run_optimizer(points, temperature, last_visited_step):
-    """
-    Build a thermally aware path.
-
-    Function:
-    - Starts at the first point.
-    - Filters valid candidates.
-    - Chooses the candidate with the lowest hybrid cost.
-    - Updates the thermal field after every move.
-
-    Use:
-    - Produces a scan route that spreads heat more evenly.
-
-    Improvement applied:
-    - Compared with a plain greedy route, this version is more physically realistic.
-    """
-    num_points = len(points)
-
-    visited = [0]
-    last_visited_step[0] = 0
-
-    for step in range(1, num_points):
-        current = visited[-1]
-
-        # Only consider points not yet visited and that pass the thermal rules.
         candidates = [
-            i for i in range(num_points)
-            if i not in visited and is_valid(i, step, temperature, last_visited_step)
+            i for i in range(n)
+            if i not in path and is_valid(i, step, temp, last)
         ]
 
-        # Fallback: if everything is blocked, relax the thermal constraint.
         if not candidates:
-            candidates = [i for i in range(num_points) if i not in visited]
+            candidates = [i for i in range(n) if i not in path]
 
-        # Choose the point with the lowest combined geometric + thermal cost.
-        next_point = min(
+        next_p = min(
             candidates,
-            key=lambda i: cost(current, i, points, temperature)
+            key=lambda i: cost(current, i, points, temp)
         )
 
-        visited.append(next_point)
-        last_visited_step[next_point] = step
-        update_temperature(next_point, step, points, temperature)
+        path.append(next_p)
+        last[next_p] = step
+        update_temperature(next_p, step, points, temp)
 
-    return visited
+    return path
 
-# =========================
-# STREAMLIT APP
-# =========================
-# This is the user interface.
-# It lets you run the optimizer and see the output without changing the code.
+# =========================================================
+# 5. OBP-LIKE OUTPUT GENERATION (MACHINE INTERFACE ABSTRACTION)
+# =========================================================
 
-st.title("🔥 Thermal Path Optimizer")
+def dwell_time(t):
+    return 1 + 0.5 * t
 
-st.sidebar.header("Settings")
-num_points = st.sidebar.slider("Number of Points", 10, 200, 50)
-seed = st.sidebar.number_input("Random Seed", value=42)
 
-# Fixed seed makes the example reproducible.
+def generate_obp(path, points, temp):
+    """Converts scan path into machine-like instruction set."""
+    cmds = []
+
+    for i in path:
+        x, y = points[i]
+        t = dwell_time(temp[i])
+
+        cmds.append(f"MOVE {x:.2f} {y:.2f}")
+        cmds.append(f"EXPOSE {t:.2f}")
+
+    return cmds
+
+# =========================================================
+# 6. STREAMLIT APPLICATION (INTERACTIVE DEMO)
+# =========================================================
+
+st.title("🔥 Thermal-Aware Scan Strategy (E-PBF Model)")
+
+st.sidebar.header("Control Panel")
+num_points = st.sidebar.slider("Number of Scan Points", 10, 200, 50, key="np")
+seed = st.sidebar.number_input("Random Seed", value=42, key="seed")
+
 np.random.seed(seed)
 
-# Generate a synthetic 2D point set in a 100x100 workspace.
+# generate synthetic powder bed scan points
 points = np.random.rand(num_points, 2) * 100
 
-# Initialize the thermal state.
-temperature, last_visited_step = init_temperature(num_points)
+# initialize thermal state
+temp, last = init_temperature(num_points)
 
-# Run the optimizer.
-path = run_optimizer(points, temperature, last_visited_step)
+# run scan strategy
+path = run_optimizer(points, temp, last)
 
-# =========================
-# OUTPUT
-# =========================
+# generate OBP-style commands
+commands = generate_obp(path, points, temp)
 
-st.subheader("Optimized Path")
+# =========================================================
+# 7. OUTPUT VISUALIZATION
+# =========================================================
+
+st.subheader("Optimized Scan Path")
 st.write(path)
 
-# Path visualization.
-# A true scatter/line plot would be better for publication,
-# but this keeps the example simple and Streamlit-friendly.
-path_points = points[path]
+st.subheader("OBP-Style Machine Commands")
+st.code("\n".join(commands))
 
 st.subheader("Path Visualization")
-chart_data = np.array(path_points)
-st.line_chart(chart_data)
+st.line_chart(points[path])
 
-# Final temperature field.
-# This shows where the model built up heat by the end of the scan.
-st.subheader("Temperature Field (final)")
-st.line_chart(temperature)
+st.subheader("Thermal Field Evolution (Final)")
+st.line_chart(temp)
 
-# Raw data is hidden inside expanders to keep the page clean.
 with st.expander("Raw Points"):
     st.write(points)
 
-with st.expander("Temperature Array"):
-    st.write(temperature)
+with st.expander("Thermal State"):
+    st.write(temp)
+
+# =========================================================
+# 8. ENGINEERING INTERPRETATION (FOR SUBMISSION)
+# =========================================================
+"""
+KEY CONTRIBUTIONS:
+
+1. Spot-based melting abstraction:
+   - Each point represents a melt/exposure location.
+
+2. Thermal field simulation:
+   - Models heat accumulation similar to E-PBF powder bed behavior.
+
+3. Hybrid scan strategy:
+   - Combines geometric efficiency and thermal stability.
+
+4. OBP-style output:
+   - Generates machine-like MOVE/EXPOSE commands.
+
+5. Freemelt ONE relevance:
+   - Conceptually aligned with scan strategy constraints in systems like
+     Freemelt ONE (electron beam powder bed fusion platform).
+
+IMPROVEMENT OVER GREEDY METHODS:
+- Prevents thermal clustering
+- Reduces localized overheating
+- Produces more physically realistic scan paths
+"""
