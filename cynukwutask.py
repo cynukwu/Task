@@ -1,87 +1,47 @@
-# =========================================================
-# THERMAL-AWARE SCAN STRATEGY (STREAMLIT SAFE)
-# WITH INLINE EXPLANATIONS FOR INTERVIEW UNDERSTANDING
-# =========================================================
-
 import streamlit as st
 import numpy as np
 
-# =========================================================
-# WHAT THIS PROJECT DOES (HIGH LEVEL)
-# =========================================================
-# This app simulates a simplified scan strategy used in
-# electron beam powder bed fusion (E-PBF).
-#
-# It models:
-# - Spot-based energy deposition (each point = melt event)
-# - Heat accumulation in nearby regions
-# - Cooling over time
-# - Scan path optimization using a hybrid rule
-#
-# This is NOT machine control software.
-# It is an educational physics-inspired optimization model.
-# =========================================================
+# =========================
+# THERMAL MODEL PARAMETERS
+# =========================
 
-# =========================================================
-# 1. PARAMETERS (CONTROLLING THE PHYSICS)
-# =========================================================
-# These parameters define how heat spreads and decays.
-# They also control how strictly we avoid overheating regions.
-
-cooling_radius = 15.0      # how far heat spreads spatially
-cooldown_steps = 5         # how long before revisiting same region
-heat_increase = 1.0        # strength of each spot heat input
-decay = 0.85               # global cooling factor
-temp_threshold = 2.5       # max allowed temperature
-
-# Cost function weights:
-# alpha = importance of travel distance
-# beta = importance of avoiding hot zones
+cooling_radius = 15.0
+cooldown_steps = 5
+heat_increase = 1.0
+decay = 0.85
+temp_threshold = 2.5
 
 alpha = 1.0
 beta = 2.0
 
-# =========================================================
-# 2. STATE INITIALIZATION
-# =========================================================
-# We store:
-# - temperature field (thermal history)
-# - last visit time (temporal spacing constraint)
 
+# =========================
+# STATE INITIALIZATION
+# =========================
 
 def init_state(n):
     temperature = np.zeros(n)
     last_visit = np.full(n, -999)
     return temperature, last_visit
 
-# =========================================================
-# 3. THERMAL UPDATE MODEL
-# =========================================================
-# Each time we visit a point:
-# - nearby points receive heat
-# - all points cool down slightly
-#
-# This mimics localized energy input in E-PBF spot melting.
 
+# =========================
+# THERMAL UPDATE
+# =========================
 
 def update_temp(idx, points, temp):
     for i in range(len(points)):
         dist = np.linalg.norm(points[i] - points[idx])
 
-        # local heat influence (Gaussian-like simplification)
         if dist < cooling_radius:
             temp[i] += heat_increase * (1.0 - dist / cooling_radius)
 
-        # global cooling (thermal relaxation)
         temp[i] *= decay
 
-# =========================================================
-# 4. VALIDITY CHECK (PROCESS CONSTRAINT)
-# =========================================================
-# Prevents selecting points that are:
-# - too hot (thermal overload)
-# - too recently visited (cooling constraint)
 
+# =========================
+# VALIDITY RULES
+# =========================
 
 def valid(i, step, temp, last_visit):
     if temp[i] > temp_threshold:
@@ -90,28 +50,18 @@ def valid(i, step, temp, last_visit):
         return False
     return True
 
-# =========================================================
-# 5. COST FUNCTION (HOW WE CHOOSE NEXT POINT)
-# =========================================================
-# The algorithm balances two competing goals:
-# 1. Short travel distance (efficiency)
-# 2. Low thermal risk (stability)
 
+# =========================
+# COST FUNCTION
+# =========================
 
 def cost(curr, cand, points, temp):
-    dist = np.linalg.norm(points[curr] - points[cand])
-    thermal = temp[cand]
-    return alpha * dist + beta * thermal
+    return alpha * np.linalg.norm(points[curr] - points[cand]) + beta * temp[cand]
 
-# =========================================================
-# 6. OPTIMIZER (MAIN PATH GENERATION)
-# =========================================================
-# This builds the scan path step by step.
-# At each step:
-# - filter valid candidates
-# - choose best according to cost function
-# - update thermal field
 
+# =========================
+# OPTIMIZER
+# =========================
 
 def run(points):
     n = len(points)
@@ -129,7 +79,6 @@ def run(points):
             if i not in path and valid(i, step, temp, last_visit)
         ]
 
-        # fallback: if all are blocked, allow remaining points
         if not candidates:
             candidates = [i for i in range(n) if i not in path]
 
@@ -141,13 +90,10 @@ def run(points):
 
     return path, temp
 
-# =========================================================
-# 7. MACHINE OUTPUT (OBP-STYLE COMMANDS)
-# =========================================================
-# Converts scan path into simple machine-like instructions:
-# MOVE = beam position
-# EXPOSE = energy deposition time (depends on temperature)
 
+# =========================
+# MACHINE OUTPUT
+# =========================
 
 def dwell(t):
     return 1.0 + 0.5 * float(t)
@@ -161,61 +107,41 @@ def obp(path, points, temp):
         cmds.append(f"EXPOSE {dwell(temp[i]):.2f}")
     return cmds
 
-# =========================================================
-# 8. STREAMLIT USER INTERFACE
-# =========================================================
 
-st.title("Thermal-Aware Scan Strategy Simulator")
+# =========================
+# STREAMLIT UI
+# =========================
 
-st.sidebar.header("Controls")
+st.title("🔥 Thermal-Aware Scan Strategy")
 
-n = st.sidebar.slider("Number of points", 10, 200, 60, key="n")
-seed = st.sidebar.number_input("Random seed", value=42, key="seed")
+n = st.sidebar.slider("Points", 10, 200, 60)
+seed = st.sidebar.number_input("Seed", value=42)
 
 np.random.seed(int(seed))
 points = np.random.rand(n, 2) * 100
 
-# run model
 path, temp = run(points)
 cmds = obp(path, points, temp)
 
-# =========================================================
-# 9. OUTPUT METRICS (WHAT YOU EXPLAIN IN INTERVIEW)
-# =========================================================
-# These values show system behavior:
-# - how hot the system becomes
-# - how many constrained regions exist
-
-st.subheader("System Metrics")
-
+st.subheader("Results")
 st.write({
-    "Mean temperature": float(np.mean(temp)),
-    "Max temperature": float(np.max(temp)),
-    "Hot points": int(np.sum(temp > temp_threshold)),
-    "Total steps": len(path)
+    "Mean temp": float(np.mean(temp)),
+    "Max temp": float(np.max(temp)),
+    "Hot spots": int(np.sum(temp > temp_threshold))
 })
 
-# =========================================================
-# 10. VISUALIZATION (STREAMLIT NATIVES ONLY)
-# =========================================================
-
-st.subheader("Spatial Layout")
+st.subheader("Scan Points")
 st.scatter_chart(points)
 
-st.subheader("Thermal Evolution")
+st.subheader("Temperature")
 st.line_chart(temp)
 
-st.subheader("Scan Sequence")
-st.line_chart(points[path])
-
-# =========================================================
-# 11. MACHINE COMMAND OUTPUT
-# =========================================================
-
-st.subheader("Generated Machine Instructions")
+st.subheader("Commands")
 st.code("\n".join(cmds))
 
 st.download_button(
-    "Download commands",
+    "Download OBP commands",
     data="\n".join(cmds),
-    file_nam
+    file_name="obp.txt",
+    mime="text/plain"
+)
